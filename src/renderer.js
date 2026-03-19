@@ -10,6 +10,7 @@ const DRAG_THRESHOLD = 3; // px — less than this = click, more = drag
 
 container.addEventListener("pointerdown", (e) => {
   if (e.button === 0) {
+    if (miniMode) { didDrag = false; return; }
     container.setPointerCapture(e.pointerId);  // Guarantees pointerup even if pointer leaves window
     isDragging = true;
     didDrag = false;
@@ -57,6 +58,16 @@ function stopDrag() {
   isDragging = false;
   window.electronAPI.dragLock(false);
   container.classList.remove("dragging");
+  // Flush pending delta before releasing
+  if (pendingDx !== 0 || pendingDy !== 0) {
+    if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
+    window.electronAPI.moveWindowBy(pendingDx, pendingDy);
+    pendingDx = 0; pendingDy = 0;
+  }
+  // Only trigger edge snap check on actual drags (not clicks)
+  if (didDrag) {
+    window.electronAPI.dragEnd();
+  }
   endDragReaction();
 }
 
@@ -82,6 +93,13 @@ window.addEventListener("blur", stopDrag);
 let dndEnabled = false;
 window.electronAPI.onDndChange((enabled) => { dndEnabled = enabled; });
 
+// --- Mini Mode (synced from main process) ---
+let miniMode = false;
+window.electronAPI.onMiniModeChange((enabled) => {
+  miniMode = enabled;
+  container.style.cursor = enabled ? "default" : "";
+});
+
 // --- Click reaction (2-click = poke, 4-click = flail) ---
 const CLICK_WINDOW_MS = 400;  // max gap between consecutive clicks
 const REACT_LEFT_SVG = "clawd-react-left.svg";
@@ -100,6 +118,10 @@ let reactTimer = null;        // auto-return timer
 let currentIdleSvg = null;    // tracks which SVG is currently showing
 
 function handleClick(clientX) {
+  if (miniMode) {
+    window.electronAPI.exitMiniMode();
+    return;
+  }
   if (isReacting || isDragReacting) return;
   if (currentIdleSvg !== "clawd-idle-follow.svg") return;
 
@@ -266,7 +288,7 @@ window.electronAPI.onStateChange((state, svg) => {
     pendingNext = null;
     clawdEl = next;
 
-    if (svg === "clawd-idle-follow.svg") {
+    if (svg === "clawd-idle-follow.svg" || svg.startsWith("clawd-mini-")) {
       attachEyeTracking(next);
     } else {
       detachEyeTracking();

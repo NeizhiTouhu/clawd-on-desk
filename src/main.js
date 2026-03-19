@@ -24,7 +24,10 @@ function loadPrefs() {
 function savePrefs() {
   if (!win || win.isDestroyed()) return;
   const { x, y } = win.getBounds();
-  const data = { x, y, size: currentSize };
+  const data = {
+    x, y, size: currentSize,
+    miniMode, preMiniX, preMiniY,
+  };
   try { fs.writeFileSync(PREFS_PATH, JSON.stringify(data)); } catch {}
 }
 
@@ -49,6 +52,14 @@ const STATE_SVGS = {
   sleeping: ["clawd-sleeping.svg"],
 };
 
+// Mini mode SVG mappings
+STATE_SVGS["mini-idle"]  = ["clawd-mini-idle.svg"];
+STATE_SVGS["mini-alert"] = ["clawd-mini-alert.svg"];
+STATE_SVGS["mini-happy"] = ["clawd-mini-happy.svg"];
+STATE_SVGS["mini-enter"] = ["clawd-mini-enter.svg"];
+STATE_SVGS["mini-peek"]  = ["clawd-mini-peek.svg"];
+STATE_SVGS["mini-crabwalk"] = ["clawd-mini-crabwalk.svg"];
+
 const MIN_DISPLAY_MS = {
   attention: 4000,
   error: 5000,
@@ -57,6 +68,8 @@ const MIN_DISPLAY_MS = {
   carrying: 3000,
   working: 1000,
   thinking: 1000,
+  "mini-alert": 4000,
+  "mini-happy": 4000,
 };
 
 // Oneshot states that auto-return to idle (subset of MIN_DISPLAY_MS)
@@ -66,6 +79,8 @@ const AUTO_RETURN_MS = {
   sweeping: 300000,  // 5min safety; PostCompact ends sweeping normally
   notification: 4000,  // matches SVG animation loop (4s)
   carrying: 3000,
+  "mini-alert": 4000,
+  "mini-happy": 4000,
 };
 
 const MOUSE_IDLE_TIMEOUT = 20000;   // 20s → idle-look
@@ -132,6 +147,23 @@ let idleWasActive = false;
 let lastEyeDx = 0, lastEyeDy = 0;
 let forceEyeResend = false;
 
+// ── Mini Mode ──
+const MINI_OFFSET_RATIO = 0.486;
+const PEEK_OFFSET = 25;
+const SNAP_TOLERANCE = 30;
+const JUMP_PEAK_HEIGHT = 40;
+const JUMP_DURATION = 350;
+const CRABWALK_SPEED = 0.12;  // px/ms
+
+let miniMode = false;
+let miniTransitioning = false;
+let miniPeeking = false;
+let preMiniX = 0, preMiniY = 0;
+let currentMiniX = 0;
+let miniTransitionTimer = null;
+let peekAnimTimer = null;
+let isAnimating = false;
+
 
 // ── Mouse idle tracking ──
 let lastCursorX = null, lastCursorY = null;
@@ -195,11 +227,20 @@ function setState(newState, svgOverride) {
 }
 
 function applyState(state, svgOverride) {
+  // Mini transition protection: only allow mini-* states through
+  if (miniTransitioning && !state.startsWith("mini-")) {
+    return;
+  }
+
+  // Mini mode interception: redirect to mini variants
+  if (miniMode && !state.startsWith("mini-")) {
+    if (state === "notification") return applyState("mini-alert");
+    if (state === "attention") return applyState("mini-happy");
+    return; // other states: silent
+  }
+
   currentState = state;
   stateChangedAt = Date.now();
-  // Main process state change overrides any renderer reaction — clear pause flag
-  // to prevent idlePaused from getting stranded when cancelReaction() doesn't
-  // send resumeFromReaction (because the reaction was cancelled, not ended).
   idlePaused = false;
 
   const svgs = STATE_SVGS[state] || STATE_SVGS.idle;
@@ -217,8 +258,8 @@ function applyState(state, svgOverride) {
 
   sendToRenderer("state-change", state, svg);
 
-  // Reset eyes when leaving idle (mainTick handles idle logic gating)
-  if (state !== "idle") {
+  // Reset eyes when leaving idle/mini-idle
+  if (state !== "idle" && state !== "mini-idle") {
     sendToRenderer("eye-move", 0, 0);
   }
 
@@ -244,11 +285,19 @@ function applyState(state, svgOverride) {
       applyState("sleeping");
     }, COLLAPSE_DURATION);
   } else if (AUTO_RETURN_MS[state]) {
-    // Oneshot states → auto-return (re-resolve from sessions instead of hardcoded idle)
     autoReturnTimer = setTimeout(() => {
       autoReturnTimer = null;
-      const resolved = resolveDisplayState();
-      applyState(resolved, getSvgOverride(resolved));
+      if (miniMode) {
+        if (mouseOverPet) {
+          miniPeeking = true;
+          applyState("mini-peek");
+        } else {
+          applyState("mini-idle");
+        }
+      } else {
+        const resolved = resolveDisplayState();
+        applyState(resolved, getSvgOverride(resolved));
+      }
     }, AUTO_RETURN_MS[state]);
   }
 }
@@ -293,8 +342,25 @@ function startMainTick() {
       }
     }
 
+    // ── Mini mode peek hover ──
+    if (miniMode && !miniTransitioning && !dragLocked) {
+      const canPeek = currentState === "mini-idle" || currentState === "mini-peek";
+      if (!isAnimating && canPeek) {
+        if (mouseOverPet && !miniPeeking) {
+          miniPeeking = true;
+          miniPeekIn();
+          applyState("mini-peek");
+        } else if (!mouseOverPet && miniPeeking) {
+          miniPeeking = false;
+          miniPeekOut();
+          applyState("mini-idle");
+        }
+      }
+    }
+
     // ── Eye tracking + sleep detection (idle only, not during reactions) ──
     const idleNow = currentState === "idle" && !idlePaused;
+    const miniIdleNow = currentState === "mini-idle" && !idlePaused && !miniTransitioning;
 
     // Edge detection: idle entry → reset state variables
     if (idleNow && !idleWasActive) {
@@ -318,61 +384,69 @@ function startMainTick() {
     }
     idleWasActive = idleNow;
 
-    if (!idleNow) return;
+    if (!idleNow && !miniIdleNow) return;
 
-    // ── Below: idle-only logic (eye tracking + mouse idle detection) ──
+    // ── Below: idle or mini-idle logic ──
     const moved = lastCursorX !== null && (cursor.x !== lastCursorX || cursor.y !== lastCursorY);
     lastCursorX = cursor.x;
     lastCursorY = cursor.y;
 
-    if (moved) {
-      mouseStillSince = Date.now();
-      hasTriggeredYawn = false;
-      idleLookPlayed = false;
-      if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
-      if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
-      if (isMouseIdle) {
-        isMouseIdle = false;
-        sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
-      }
-    }
-
-    const elapsed = Date.now() - mouseStillSince;
-
-    // 60s no mouse movement → yawning → dozing
-    if (!hasTriggeredYawn && elapsed >= MOUSE_SLEEP_TIMEOUT) {
-      hasTriggeredYawn = true;
-      if (!isMouseIdle) sendToRenderer("eye-move", 0, 0);
-      yawnDelayTimer = setTimeout(() => {
-        yawnDelayTimer = null;
-        if (currentState === "idle") setState("yawning");
-      }, isMouseIdle ? 50 : 250);
-      return;
-    }
-
-    // 20s no mouse movement → idle-look (play once, then return)
-    if (!isMouseIdle && !hasTriggeredYawn && !idleLookPlayed && elapsed >= MOUSE_IDLE_TIMEOUT) {
-      isMouseIdle = true;
-      idleLookPlayed = true;
-      sendToRenderer("eye-move", 0, 0);
-      setTimeout(() => {
-        if (isMouseIdle && currentState === "idle") {
-          sendToRenderer("state-change", "idle", SVG_IDLE_LOOK);
-        }
-      }, 250);
-      idleLookReturnTimer = setTimeout(() => {
-        idleLookReturnTimer = null;
-        if (isMouseIdle && currentState === "idle") {
+    // Normal idle: mouse idle detection + sleep sequence
+    if (idleNow) {
+      if (moved) {
+        mouseStillSince = Date.now();
+        hasTriggeredYawn = false;
+        idleLookPlayed = false;
+        if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
+        if (yawnDelayTimer) { clearTimeout(yawnDelayTimer); yawnDelayTimer = null; }
+        if (isMouseIdle) {
           isMouseIdle = false;
           sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
-          setTimeout(() => { forceEyeResend = true; }, 200);
         }
-      }, 250 + IDLE_LOOK_DURATION);
-      return;
+      }
+
+      const elapsed = Date.now() - mouseStillSince;
+
+      // 60s no mouse movement → yawning → dozing
+      if (!hasTriggeredYawn && elapsed >= MOUSE_SLEEP_TIMEOUT) {
+        hasTriggeredYawn = true;
+        if (!isMouseIdle) sendToRenderer("eye-move", 0, 0);
+        yawnDelayTimer = setTimeout(() => {
+          yawnDelayTimer = null;
+          if (currentState === "idle") setState("yawning");
+        }, isMouseIdle ? 50 : 250);
+        return;
+      }
+
+      // 20s no mouse movement → idle-look (play once, then return)
+      if (!isMouseIdle && !hasTriggeredYawn && !idleLookPlayed && elapsed >= MOUSE_IDLE_TIMEOUT) {
+        isMouseIdle = true;
+        idleLookPlayed = true;
+        sendToRenderer("eye-move", 0, 0);
+        setTimeout(() => {
+          if (isMouseIdle && currentState === "idle") {
+            sendToRenderer("state-change", "idle", SVG_IDLE_LOOK);
+          }
+        }, 250);
+        idleLookReturnTimer = setTimeout(() => {
+          idleLookReturnTimer = null;
+          if (isMouseIdle && currentState === "idle") {
+            isMouseIdle = false;
+            sendToRenderer("state-change", "idle", SVG_IDLE_FOLLOW);
+            setTimeout(() => { forceEyeResend = true; }, 200);
+          }
+        }, 250 + IDLE_LOOK_DURATION);
+        return;
+      }
+
+      // Only send eye position when showing idle-follow
+      if (isMouseIdle || (!moved && !forceEyeResend)) return;
+    } else {
+      // miniIdleNow: skip sleep detection, eye tracking only
+      if (!moved && !forceEyeResend) return;
     }
 
-    // Only send eye position when showing idle-follow
-    if (isMouseIdle || (!moved && !forceEyeResend)) return;
+    // ── Eye position calculation (shared by idle and mini-idle) ──
     const skipDedup = forceEyeResend;
     forceEyeResend = false;
 
@@ -566,7 +640,11 @@ function enableDoNotDisturb() {
   if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
   if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
   stopWakePoll();
-  applyState("sleeping");
+  if (miniMode) {
+    applyState("mini-idle");
+  } else {
+    applyState("sleeping");
+  }
   buildContextMenu();
   buildTrayMenu();
 }
@@ -575,9 +653,12 @@ function disableDoNotDisturb() {
   if (!doNotDisturb) return;
   doNotDisturb = false;
   sendToRenderer("dnd-change", false);
-  // Resolve from active sessions instead of blindly forcing idle
-  const resolved = resolveDisplayState();
-  applyState(resolved, getSvgOverride(resolved));
+  if (miniMode) {
+    applyState("mini-idle");
+  } else {
+    const resolved = resolveDisplayState();
+    applyState(resolved, getSvgOverride(resolved));
+  }
   buildContextMenu();
   buildTrayMenu();
 }
@@ -677,7 +758,16 @@ function createWindow() {
 
   // Restore saved position, or default to bottom-right of primary display
   let startX, startY;
-  if (prefs) {
+  if (prefs && prefs.miniMode) {
+    // Restore mini mode
+    preMiniX = prefs.preMiniX || 0;
+    preMiniY = prefs.preMiniY || 0;
+    const wa = getNearestWorkArea(prefs.x + size.width / 2, prefs.y + size.height / 2);
+    currentMiniX = wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
+    startX = currentMiniX;
+    startY = prefs.y;
+    miniMode = true;
+  } else if (prefs) {
     const clamped = clampToScreen(prefs.x, prefs.y, size.width, size.height);
     startX = clamped.x;
     startY = clamped.y;
@@ -715,6 +805,7 @@ function createWindow() {
   });
 
   ipcMain.on("move-window-by", (event, dx, dy) => {
+    if (miniMode) return;
     const { x, y } = win.getBounds();
     const size = SIZES[currentSize];
     const clamped = clampToScreen(x + dx, y + dy, size.width, size.height);
@@ -724,6 +815,8 @@ function createWindow() {
   ipcMain.on("pause-cursor-polling", () => { idlePaused = true; });
   ipcMain.on("resume-from-reaction", () => {
     idlePaused = false;
+    // Skip re-send during mini transition (drag-end fires next and will set the right state)
+    if (miniTransitioning) return;
     // Re-send current state to renderer without resetting stateChangedAt or timers.
     sendToRenderer("state-change", currentState, currentSvg);
   });
@@ -736,6 +829,16 @@ function createWindow() {
     }
   });
 
+  ipcMain.on("drag-end", () => {
+    if (!miniMode) {
+      checkMiniModeSnap();
+    }
+  });
+
+  ipcMain.on("exit-mini-mode", () => {
+    if (miniMode) exitMiniMode();
+  });
+
   startMainTick();
   startHttpServer();
   startStaleCleanup();
@@ -743,9 +846,18 @@ function createWindow() {
   // If hooks arrived during startup, respect them instead of forcing idle
   // Also handles crash recovery (render-process-gone → reload)
   win.webContents.on("did-finish-load", () => {
+    if (miniMode) {
+      sendToRenderer("mini-mode-change", true);
+    }
     if (doNotDisturb) {
       sendToRenderer("dnd-change", true);
-      applyState("sleeping");
+      if (miniMode) {
+        applyState("mini-idle");
+      } else {
+        applyState("sleeping");
+      }
+    } else if (miniMode) {
+      applyState("mini-idle");
     } else if (sessions.size > 0) {
       const resolved = resolveDisplayState();
       applyState(resolved, getSvgOverride(resolved));
@@ -760,6 +872,7 @@ function createWindow() {
     dragLocked = false;
     idlePaused = false;
     mouseOverPet = false;
+    miniPeeking = false;
     win.setIgnoreMouseEvents(true);
     win.webContents.reload();
   });
@@ -777,6 +890,13 @@ function createWindow() {
   // ── Display change: re-clamp window to prevent off-screen ──
   screen.on("display-metrics-changed", () => {
     if (!win || win.isDestroyed()) return;
+    if (miniMode) {
+      const { y, width, height } = win.getBounds();
+      const wa = getNearestWorkArea(currentMiniX + width / 2, y + height / 2);
+      currentMiniX = wa.x + wa.width - Math.round(width * (1 - MINI_OFFSET_RATIO));
+      win.setBounds({ x: currentMiniX, y, width, height });
+      return;
+    }
     const { x, y, width, height } = win.getBounds();
     const clamped = clampToScreen(x, y, width, height);
     if (clamped.x !== x || clamped.y !== y) {
@@ -785,16 +905,18 @@ function createWindow() {
   });
   screen.on("display-removed", () => {
     if (!win || win.isDestroyed()) return;
+    if (miniMode) {
+      exitMiniMode();
+      return;
+    }
     const { x, y, width, height } = win.getBounds();
     const clamped = clampToScreen(x, y, width, height);
     win.setBounds({ ...clamped, width, height });
   });
 }
 
-function clampToScreen(x, y, w, h) {
+function getNearestWorkArea(cx, cy) {
   const displays = screen.getAllDisplays();
-  const cx = x + w / 2;
-  const cy = y + h / 2;
   let nearest = displays[0].workArea;
   let minDist = Infinity;
   for (const d of displays) {
@@ -804,20 +926,209 @@ function clampToScreen(x, y, w, h) {
     const dist = dx * dx + dy * dy;
     if (dist < minDist) { minDist = dist; nearest = wa; }
   }
-  // Allow window to overflow screen so the CHARACTER can reach screen edges.
-  // Margins derived from CSS object sizing (OBJ_SCALE/OBJ_OFF constants).
-  const mLeft  = Math.round(w * 0.25);  // character left edge ~25% from window left
-  const mRight = Math.round(w * 0.25);  // character right edge ~25% from window right
-  const mTop   = Math.round(h * 0.6);   // character top ~60% from window top
-  const mBot   = Math.round(h * 0.04);  // character bottom ~4% from window bottom
+  return nearest;
+}
+
+function clampToScreen(x, y, w, h) {
+  const nearest = getNearestWorkArea(x + w / 2, y + h / 2);
+  const mLeft  = Math.round(w * 0.25);
+  const mRight = Math.round(w * 0.25);
+  const mTop   = Math.round(h * 0.6);
+  const mBot   = Math.round(h * 0.04);
   return {
     x: Math.max(nearest.x - mLeft, Math.min(x, nearest.x + nearest.width - w + mRight)),
     y: Math.max(nearest.y - mTop,  Math.min(y, nearest.y + nearest.height - h + mBot)),
   };
 }
 
+// ── Window animation ──
+function animateWindowX(targetX, durationMs) {
+  if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
+  const bounds = win.getBounds();
+  const startX = bounds.x;
+  const size = SIZES[currentSize];
+  if (startX === targetX) { isAnimating = false; return; }
+  isAnimating = true;
+  const startTime = Date.now();
+  const startY = bounds.y;
+  const step = () => {
+    if (!win || win.isDestroyed()) { peekAnimTimer = null; isAnimating = false; return; }
+    const t = Math.min(1, (Date.now() - startTime) / durationMs);
+    const eased = t * (2 - t);
+    const x = Math.round(startX + (targetX - startX) * eased);
+    win.setBounds({ x, y: startY, width: size.width, height: size.height });
+    if (t < 1) {
+      peekAnimTimer = setTimeout(step, 16);
+    } else {
+      peekAnimTimer = null;
+      isAnimating = false;
+    }
+  };
+  step();
+}
+
+function animateWindowParabola(targetX, targetY, durationMs, onDone) {
+  if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
+  const bounds = win.getBounds();
+  const startX = bounds.x, startY = bounds.y;
+  const size = SIZES[currentSize];
+  if (startX === targetX && startY === targetY) {
+    isAnimating = false;
+    if (onDone) onDone();
+    return;
+  }
+  isAnimating = true;
+  const startTime = Date.now();
+  const step = () => {
+    if (!win || win.isDestroyed()) { peekAnimTimer = null; isAnimating = false; return; }
+    const t = Math.min(1, (Date.now() - startTime) / durationMs);
+    const eased = t * (2 - t);
+    const x = Math.round(startX + (targetX - startX) * eased);
+    const arc = -4 * JUMP_PEAK_HEIGHT * t * (t - 1);
+    const y = Math.round(startY + (targetY - startY) * eased - arc);
+    win.setBounds({ x, y, width: size.width, height: size.height });
+    if (t < 1) {
+      peekAnimTimer = setTimeout(step, 16);
+    } else {
+      peekAnimTimer = null;
+      isAnimating = false;
+      if (onDone) onDone();
+    }
+  };
+  step();
+}
+
+// ── Mini Mode functions ──
+function miniPeekIn() {
+  animateWindowX(currentMiniX - PEEK_OFFSET, 200);
+}
+
+function miniPeekOut() {
+  animateWindowX(currentMiniX, 200);
+}
+
+function cancelMiniTransition() {
+  miniTransitioning = false;
+  if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
+}
+
+function checkMiniModeSnap() {
+  if (miniMode) return;
+  const bounds = win.getBounds();
+  const size = SIZES[currentSize];
+  const mRight = Math.round(size.width * 0.25);
+  // Check against ALL monitors' right edges (not just nearest)
+  const displays = screen.getAllDisplays();
+  for (const d of displays) {
+    const wa = d.workArea;
+    const rightLimit = wa.x + wa.width - size.width + mRight;
+    if (bounds.x >= rightLimit - SNAP_TOLERANCE) {
+      enterMiniMode(wa);
+      return;
+    }
+  }
+}
+
+function enterMiniMode(wa, viaMenu) {
+  if (miniMode && !viaMenu) return; // Already in mini mode
+  const bounds = win.getBounds();
+  if (!viaMenu) {
+    preMiniX = bounds.x;
+    preMiniY = bounds.y;
+  }
+  miniMode = true;
+  miniPeeking = false;
+  const size = SIZES[currentSize];
+  currentMiniX = wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
+
+  if (autoReturnTimer) { clearTimeout(autoReturnTimer); autoReturnTimer = null; }
+  if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; pendingState = null; }
+  stopWakePoll();
+
+  sendToRenderer("mini-mode-change", true);
+  miniTransitioning = true;
+  buildContextMenu();
+  buildTrayMenu();
+
+  if (viaMenu) {
+    // Jump past ALL screens, load enter SVG off-screen, then slide to mini position
+    const displays = screen.getAllDisplays();
+    let maxRight = 0;
+    for (const d of displays) maxRight = Math.max(maxRight, d.bounds.x + d.bounds.width);
+    const jumpTarget = maxRight;
+    animateWindowParabola(jumpTarget, bounds.y, JUMP_DURATION, () => {
+      // Window is past all screens — load enter SVG here (invisible)
+      applyState("mini-enter");
+      miniTransitionTimer = setTimeout(() => {
+        // SVG is loaded, now move to mini position (enter animation already playing)
+        win.setBounds({ x: currentMiniX, y: bounds.y, width: size.width, height: size.height });
+        miniTransitionTimer = setTimeout(() => {
+          miniTransitioning = false;
+          applyState("mini-idle");
+        }, 3200);
+      }, 300);
+    });
+  } else {
+    // Drag entry: fast slide + immediate enter animation (no idle hiccup)
+    animateWindowX(currentMiniX, 100);
+    applyState("mini-enter");
+    miniTransitionTimer = setTimeout(() => {
+      miniTransitioning = false;
+      applyState("mini-idle");
+    }, 3200);
+  }
+}
+
+function exitMiniMode() {
+  if (!miniMode) return;
+  cancelMiniTransition();
+  miniMode = false;
+  miniPeeking = false;
+  sendToRenderer("mini-mode-change", false);
+  buildContextMenu();
+  buildTrayMenu();
+
+  const size = SIZES[currentSize];
+  const clamped = clampToScreen(preMiniX, preMiniY, size.width, size.height);
+  const wa = getNearestWorkArea(clamped.x + size.width / 2, clamped.y + size.height / 2);
+  const mRight = Math.round(size.width * 0.25);
+  if (clamped.x >= wa.x + wa.width - size.width + mRight - SNAP_TOLERANCE) {
+    clamped.x = wa.x + wa.width - size.width + mRight - 100;
+  }
+
+  animateWindowParabola(clamped.x, clamped.y, JUMP_DURATION, () => {
+    if (doNotDisturb) {
+      applyState("sleeping");
+    } else {
+      const resolved = resolveDisplayState();
+      setState(resolved, getSvgOverride(resolved));
+    }
+  });
+}
+
+function enterMiniViaMenu() {
+  const bounds = win.getBounds();
+  const size = SIZES[currentSize];
+  const wa = getNearestWorkArea(bounds.x + size.width / 2, bounds.y + size.height / 2);
+
+  preMiniX = bounds.x;
+  preMiniY = bounds.y;
+  miniTransitioning = true;
+
+  applyState("mini-crabwalk");
+
+  const edgeX = wa.x + wa.width - size.width + Math.round(size.width * 0.25);
+  const walkDist = Math.abs(bounds.x - edgeX);
+  const walkDuration = walkDist / CRABWALK_SPEED;
+  animateWindowX(edgeX, walkDuration);
+
+  miniTransitionTimer = setTimeout(() => {
+    enterMiniMode(wa, true);
+  }, walkDuration + 50);
+}
+
 function buildContextMenu() {
-  contextMenu = Menu.buildFromTemplate([
+  const template = [
     {
       label: "大小",
       submenu: [
@@ -828,19 +1139,32 @@ function buildContextMenu() {
     },
     { type: "separator" },
     {
+      label: miniMode ? "退出极简模式" : "极简模式",
+      click: () => miniMode ? exitMiniMode() : enterMiniViaMenu(),
+    },
+    { type: "separator" },
+    {
       label: doNotDisturb ? "唤醒 Clawd" : "休眠（免打扰）",
       click: () => doNotDisturb ? disableDoNotDisturb() : enableDoNotDisturb(),
     },
     { type: "separator" },
     { label: "退出", click: () => app.quit() },
-  ]);
+  ];
+  contextMenu = Menu.buildFromTemplate(template);
 }
 
 function resizeWindow(sizeKey) {
   currentSize = sizeKey;
   const size = SIZES[sizeKey];
-  const { x, y } = win.getBounds();
-  win.setBounds({ x, y, width: size.width, height: size.height });
+  if (miniMode) {
+    const { y } = win.getBounds();
+    const wa = getNearestWorkArea(currentMiniX + size.width / 2, y + size.height / 2);
+    currentMiniX = wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
+    win.setBounds({ x: currentMiniX, y, width: size.width, height: size.height });
+  } else {
+    const { x, y } = win.getBounds();
+    win.setBounds({ x, y, width: size.width, height: size.height });
+  }
   buildContextMenu();
   savePrefs();
 }
@@ -863,6 +1187,8 @@ if (!gotTheLock) {
     if (autoReturnTimer) clearTimeout(autoReturnTimer);
     if (mainTickTimer) clearInterval(mainTickTimer);
     if (wakePollTimer) clearInterval(wakePollTimer);
+    if (miniTransitionTimer) clearTimeout(miniTransitionTimer);
+    if (peekAnimTimer) clearTimeout(peekAnimTimer);
     stopStaleCleanup();
     if (httpServer) httpServer.close();
   });

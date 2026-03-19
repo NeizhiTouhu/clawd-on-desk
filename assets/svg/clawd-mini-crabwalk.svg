@@ -31,6 +31,21 @@
         0%, 100% { transform: rotate(-25deg) scaleY(0.7); }
         50% { transform: rotate(0deg) scaleY(1); }
       }
+
+      /* Eyes: look right (toward destination), occasionally glance back and blink */
+      .eyes-crabwalk {
+        transform-origin: 7.5px 9px;
+        animation: crab-eyes 5s infinite ease-in-out;
+      }
+      @keyframes crab-eyes {
+        0%, 55%  { transform: translateX(2px) scaleY(1); }
+        62%      { transform: translateX(0) scaleY(1); }
+        66%      { transform: translateX(0) scaleY(0.1); }
+        70%      { transform: translateX(0) scaleY(1); }
+        75%      { transform: translateX(0) scaleY(0.1); }
+        80%, 85% { transform: translateX(0) scaleY(1); }
+        92%, 100% { transform: translateX(2px) scaleY(1); }
+      }
     </style>
   </defs>
 
@@ -52,10 +67,10 @@
       <rect id="right-arm" x="13" y="9" width="2" height="2"/>
     </g>
 
-    <!-- Eyes (both normal size) -->
-    <g fill="#000000">
-      <rect id="left-eye" x="4" y="8" width="1" height="2"/>
-      <rect id="right-eye" x="10" y="8" width="1" height="2"/>
+    <!-- Eyes: look right, occasionally glance back + blink -->
+    <g class="eyes-crabwalk" fill="#000000">
+      <rect x="4" y="8" width="1" height="2"/>
+      <rect x="10" y="8" width="1" height="2"/>
     </g>
   </g>
 </svg>

@@ -117,8 +117,8 @@
     </g>
   </g>
 
-  <!-- Sparkles (outside rotation = stay upright, positioned left for visibility) -->
-  <use href="#px-sparkle" x="-6" y="2"  fill="#FFD700" style="--delay: 0s"/>
-  <use href="#px-sparkle" x="-10" y="8" fill="#FFA000" style="--delay: 0.4s"/>
-  <use href="#px-sparkle" x="-3" y="-3" fill="#FFF59D" style="--delay: 0.8s"/>
+  <!-- Sparkles (outside rotation = stay upright, within window bounds) -->
+  <use href="#px-sparkle" x="-3" y="0"  fill="#FFD700" style="--delay: 0s"/>
+  <use href="#px-sparkle" x="-6" y="6"  fill="#FFA000" style="--delay: 0.4s"/>
+  <use href="#px-sparkle" x="0"  y="-5" fill="#FFF59D" style="--delay: 0.8s"/>
 </svg>

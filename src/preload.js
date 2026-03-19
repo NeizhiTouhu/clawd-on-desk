@@ -10,4 +10,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   resumeFromReaction: () => ipcRenderer.send("resume-from-reaction"),
   onDndChange: (callback) => ipcRenderer.on("dnd-change", (_, enabled) => callback(enabled)),
   dragLock: (locked) => ipcRenderer.send("drag-lock", locked),
+  onMiniModeChange: (cb) => ipcRenderer.on("mini-mode-change", (_, enabled) => cb(enabled)),
+  exitMiniMode: () => ipcRenderer.send("exit-mini-mode"),
+  dragEnd: () => ipcRenderer.send("drag-end"),
 });
