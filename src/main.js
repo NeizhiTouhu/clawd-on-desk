@@ -453,6 +453,26 @@ function createWindow() {
   });
 
   win.setFocusable(false);
+
+  // Watchdog: prevent accidental window close. Only allow close when isQuitting is set
+  // (i.e. user explicitly quit via menu). Also guard against renderer crashes.
+  win.on("close", (event) => {
+    if (!isQuitting) {
+      event.preventDefault();
+      if (!win.isVisible()) win.showInactive();
+    }
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    if (isQuitting) return;
+    console.warn("Clawd: renderer crashed:", details.reason, "— reloading");
+    win.webContents.reload();
+  });
+  win.on("unresponsive", () => {
+    if (isQuitting) return;
+    console.warn("Clawd: renderer unresponsive — reloading");
+    win.webContents.reload();
+  });
+
   if (isWin) {
     // Windows: use pop-up-menu level to stay above taskbar/shell UI
     win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -493,7 +513,8 @@ function createWindow() {
       resizable: false,
       skipTaskbar: true,
       hasShadow: false,
-      focusable: true,  // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input routing bugs
+      ...(process.platform === "linux" ? { type: "toolbar", parent: win } : {}),
+      focusable: process.platform !== "linux",  // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input routing bugs (Windows-only issue)
       webPreferences: {
         preload: path.join(__dirname, "preload-hit.js"),
         backgroundThrottling: false,
@@ -504,6 +525,8 @@ function createWindow() {
     hitWin.setShape([{ x: 0, y: 0, width: hw, height: hh }]);
     hitWin.setIgnoreMouseEvents(false);  // PERMANENT — never toggle
     hitWin.showInactive();
+    // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
+    if (process.platform === "linux") hitWin.setSkipTaskbar(true);
     if (isWin) {
       hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
