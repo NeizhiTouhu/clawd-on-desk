@@ -55,6 +55,7 @@
     "linux": {
       "icon": "assets/icons",
       "category": "Utility",
+      "maintainer": "clawd-on-desk contributors <noreply@github.com>",
       "target": [
         {
           "target": "AppImage",
