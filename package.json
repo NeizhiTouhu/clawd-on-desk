@@ -17,7 +17,10 @@
     "electron",
     "claude-code"
   ],
-  "author": "rullerzhou-afk",
+  "author": {
+    "name": "rullerzhou-afk",
+    "email": "geekweilai@gmail.com"
+  },
   "license": "MIT",
   "type": "commonjs",
   "build": {
@@ -53,7 +56,7 @@
       ]
     },
     "linux": {
-      "icon": "assets",
+      "icon": "assets/icons",
       "category": "Utility",
       "target": [
         {
