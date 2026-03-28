@@ -513,7 +513,6 @@ function createWindow() {
       resizable: false,
       skipTaskbar: true,
       hasShadow: false,
-      ...(process.platform === "linux" ? { type: "toolbar" } : {}),
       focusable: process.platform !== "linux",  // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input routing bugs (Windows-only issue)
       webPreferences: {
         preload: path.join(__dirname, "preload-hit.js"),
