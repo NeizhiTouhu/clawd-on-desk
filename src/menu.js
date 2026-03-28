@@ -5,6 +5,44 @@ const path = require("path");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
+const isLinux = process.platform === "linux";
+
+// ── Linux XDG autostart helpers ──
+const fs = require("fs");
+const os = require("os");
+const AUTOSTART_DIR = path.join(os.homedir(), ".config", "autostart");
+const AUTOSTART_FILE = path.join(AUTOSTART_DIR, "clawd-on-desk.desktop");
+
+function linuxGetOpenAtLogin() {
+  try { return fs.existsSync(AUTOSTART_FILE); } catch { return false; }
+}
+
+function linuxSetOpenAtLogin(enable) {
+  if (enable) {
+    const projectDir = path.resolve(__dirname, "..");
+    const launchScript = path.join(projectDir, "launch.js");
+    const execCmd = app.isPackaged
+      ? `"${app.getPath("exe")}"`
+      : `node "${launchScript}"`;
+    const desktop = [
+      "[Desktop Entry]",
+      "Type=Application",
+      "Name=Clawd on Desk",
+      `Exec=${execCmd}`,
+      "Hidden=false",
+      "NoDisplay=false",
+      "X-GNOME-Autostart-enabled=true",
+    ].join("\n") + "\n";
+    try {
+      fs.mkdirSync(AUTOSTART_DIR, { recursive: true });
+      fs.writeFileSync(AUTOSTART_FILE, desktop);
+    } catch (err) {
+      console.warn("Clawd: failed to write autostart entry:", err.message);
+    }
+  } else {
+    try { fs.unlinkSync(AUTOSTART_FILE); } catch {}
+  }
+}
 const WIN_TOPMOST_LEVEL = "pop-up-menu"; // above taskbar-level UI
 
 // ── Window size presets (mirrored from main.js for resizeWindow) ──
@@ -189,9 +227,15 @@ module.exports = function initMenu(ctx) {
       {
         label: t("startOnLogin"),
         type: "checkbox",
-        checked: app.getLoginItemSettings().openAtLogin,
+        checked: isLinux ? linuxGetOpenAtLogin() : app.getLoginItemSettings().openAtLogin,
         click: (menuItem) => {
-          app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+          if (isLinux) {
+            linuxSetOpenAtLogin(menuItem.checked);
+          } else {
+            app.setLoginItemSettings({ openAtLogin: menuItem.checked });
+          }
+          buildTrayMenu();
+          buildContextMenu();
         },
       },
       {
@@ -211,6 +255,8 @@ module.exports = function initMenu(ctx) {
             console.warn("Clawd: failed to toggle auto-start hook:", err.message);
           }
           ctx.savePrefs();
+          buildTrayMenu();
+          buildContextMenu();
         },
       },
     ];
