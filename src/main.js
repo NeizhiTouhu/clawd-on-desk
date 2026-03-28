@@ -3,11 +3,12 @@ const path = require("path");
 const fs = require("fs");
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 
 
 // ── Windows: AllowSetForegroundWindow via FFI ──
 let _allowSetForeground = null;
-if (!isMac) {
+if (isWin) {
   try {
     const koffi = require("koffi");
     const user32 = koffi.load("user32.dll");
@@ -284,7 +285,7 @@ let hwndRecoveryTimer = null;
 // the right-click context menu restore drag capability — it forces Windows to
 // fully recalculate the transparent window's input target region.
 function scheduleHwndRecovery() {
-  if (isMac) return;
+  if (!isWin) return;
   if (hwndRecoveryTimer) clearTimeout(hwndRecoveryTimer);
   hwndRecoveryTimer = setTimeout(() => {
     hwndRecoveryTimer = null;
@@ -297,7 +298,7 @@ function scheduleHwndRecovery() {
 }
 
 function guardAlwaysOnTop(w) {
-  if (isMac) return;
+  if (!isWin) return;
   w.on("always-on-top-changed", (_, isOnTop) => {
     if (!isOnTop && w && !w.isDestroyed()) {
       w.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -314,7 +315,7 @@ function guardAlwaysOnTop(w) {
 }
 
 function startTopmostWatchdog() {
-  if (isMac || topmostWatchdog) return;
+  if (!isWin || topmostWatchdog) return;
   topmostWatchdog = setInterval(() => {
     if (win && !win.isDestroyed()) {
       win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
@@ -451,7 +452,7 @@ function createWindow() {
   });
 
   win.setFocusable(false);
-  if (!isMac) {
+  if (isWin) {
     // Windows: use pop-up-menu level to stay above taskbar/shell UI
     win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
   }
@@ -502,13 +503,13 @@ function createWindow() {
     hitWin.setShape([{ x: 0, y: 0, width: hw, height: hh }]);
     hitWin.setIgnoreMouseEvents(false);  // PERMANENT — never toggle
     hitWin.showInactive();
-    if (!isMac) {
+    if (isWin) {
       hitWin.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
     // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
     reapplyMacVisibility();
     hitWin.loadFile(path.join(__dirname, "hit.html"));
-    if (!isMac) guardAlwaysOnTop(hitWin);
+    if (isWin) guardAlwaysOnTop(hitWin);
 
     // Event-level safety net for position sync
     win.on("move", syncHitWin);
