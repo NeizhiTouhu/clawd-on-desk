@@ -41,8 +41,19 @@ function launchApp() {
           stdio: "ignore",
         }).unref();
       } else {
-        // Linux packaged app: keep generic and launch the current executable.
-        spawn(process.execPath, [], { detached: true, stdio: "ignore" }).unref();
+        // Linux packaged app:
+        // AppImage: process.env.APPIMAGE holds the .AppImage file path.
+        // deb/dir:  executable is <install>/clawd-on-desk, same depth as Windows.
+        //   __dirname: <install>/resources/app.asar.unpacked/hooks
+        //   install:   3 levels up
+        const appImage = process.env.APPIMAGE;
+        if (appImage) {
+          spawn(appImage, [], { detached: true, stdio: "ignore" }).unref();
+        } else {
+          const installDir = path.resolve(__dirname, "..", "..", "..");
+          const exe = path.join(installDir, "clawd-on-desk");
+          spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+        }
       }
     } else {
       // Source / development mode
