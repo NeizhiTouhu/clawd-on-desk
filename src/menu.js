@@ -4,6 +4,7 @@ const { app, BrowserWindow, screen, Menu, Tray, nativeImage } = require("electro
 const path = require("path");
 
 const isMac = process.platform === "darwin";
+const isWin = process.platform === "win32";
 const WIN_TOPMOST_LEVEL = "pop-up-menu"; // above taskbar-level UI
 
 // ── Window size presets (mirrored from main.js for resizeWindow) ──
@@ -320,7 +321,7 @@ module.exports = function initMenu(ctx) {
           ctx.win.showInactive();
           if (isMac) {
             ctx.reapplyMacVisibility();
-          } else {
+          } else if (isWin) {
             ctx.win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
           }
         }

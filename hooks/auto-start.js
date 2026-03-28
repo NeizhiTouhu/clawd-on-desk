@@ -22,6 +22,7 @@ discoverClawdPort({ timeoutMs: TIMEOUT_MS }, (port) => {
 function launchApp() {
   const isPackaged = __dirname.includes("app.asar");
   const isWin = process.platform === "win32";
+  const isMac = process.platform === "darwin";
 
   try {
     if (isPackaged) {
@@ -31,7 +32,7 @@ function launchApp() {
         const installDir = path.resolve(__dirname, "..", "..", "..");
         const exe = path.join(installDir, "Clawd on Desk.exe");
         spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
-      } else {
+      } else if (isMac) {
         // __dirname: <name>.app/Contents/Resources/app.asar.unpacked/hooks
         // .app bundle: 4 levels up
         const appBundle = path.resolve(__dirname, "..", "..", "..", "..");
@@ -39,6 +40,9 @@ function launchApp() {
           detached: true,
           stdio: "ignore",
         }).unref();
+      } else {
+        // Linux packaged app: keep generic and launch the current executable.
+        spawn(process.execPath, [], { detached: true, stdio: "ignore" }).unref();
       }
     } else {
       // Source / development mode
