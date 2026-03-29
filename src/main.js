@@ -477,6 +477,8 @@ function createWindow() {
   }
   win.loadFile(path.join(__dirname, "index.html"));
   win.showInactive();
+  // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
+  if (process.platform === "linux") win.setSkipTaskbar(true);
   // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
   reapplyMacVisibility();
 

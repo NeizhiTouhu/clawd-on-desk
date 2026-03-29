@@ -355,6 +355,8 @@ module.exports = function initMenu(ctx) {
     const cursor = screen.getCursorScreenPoint();
     owner.setBounds({ x: cursor.x, y: cursor.y, width: 1, height: 1 });
     owner.show();
+    // Linux WMs may reset skipTaskbar after show/showInactive — re-apply explicitly
+    if (process.platform === "linux") owner.setSkipTaskbar(true);
     owner.focus();
 
     ctx.menuOpen = true;

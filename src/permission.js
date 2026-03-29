@@ -149,6 +149,8 @@ function showPermissionBubble(permEntry) {
 
   repositionBubbles();
   bub.showInactive();
+  // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
+  if (process.platform === "linux") bub.setSkipTaskbar(true);
   // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
   ctx.reapplyMacVisibility();
 
