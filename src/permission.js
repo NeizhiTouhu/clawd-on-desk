@@ -151,12 +151,13 @@ function showPermissionBubble(permEntry) {
   });
 
   repositionBubbles();
-  if (ctx.petHidden) return;
-  bub.showInactive();
-  // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
-  if (isLinux) bub.setSkipTaskbar(true);
-  // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
-  ctx.reapplyMacVisibility();
+  if (!ctx.petHidden) {
+    bub.showInactive();
+    // Linux WMs may reset skipTaskbar after showInactive — re-apply explicitly
+    if (isLinux) bub.setSkipTaskbar(true);
+    // macOS: apply after showInactive() — it resets NSWindowCollectionBehavior
+    ctx.reapplyMacVisibility();
+  }
 
   bub.on("closed", () => {
     const idx = pendingPermissions.indexOf(permEntry);
